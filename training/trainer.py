@@ -749,12 +749,10 @@ class Trainer:
         loss_dict = self.loss(y_hat, batch)
 
         # ---- MoE auxiliary load balancing loss ----
-        # Unwrap DDP wrapper to access the underlying model
-        actual_model = model.module if hasattr(model, 'module') else model
-        if (actual_model.camera_head is not None
-                and getattr(actual_model.camera_head, 'use_moe', False)
-                and actual_model.camera_head.moe_aux_loss is not None):
-            moe_aux_loss = actual_model.camera_head.moe_aux_loss
+        # moe_aux_loss flows through y_hat (set by VGGT.forward from camera_head).
+        # It is None when use_moe=False, and a scalar tensor otherwise.
+        moe_aux_loss = y_hat.get("moe_aux_loss")
+        if moe_aux_loss is not None:
             loss_dict["loss_moe_aux"] = moe_aux_loss
             loss_dict["objective"] = loss_dict["objective"] + 0.01 * moe_aux_loss
 

@@ -70,7 +70,10 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
                 pose_enc_list = self.camera_head(aggregated_tokens_list)
                 predictions["pose_enc"] = pose_enc_list[-1]  # pose encoding of the last iteration
                 predictions["pose_enc_list"] = pose_enc_list
-                
+                # Pass MoE auxiliary loss through predictions so the trainer can access it
+                # without needing to unwrap DDP. None when use_moe=False.
+                predictions["moe_aux_loss"] = self.camera_head.moe_aux_loss
+
             if self.depth_head is not None:
                 depth, depth_conf = self.depth_head(
                     aggregated_tokens_list, images=images, patch_start_idx=patch_start_idx
