@@ -1,0 +1,191 @@
+# =============================================================================
+# VGGT Full-Parameter Fine-Tuning Config on Co3D
+# =============================================================================
+# This config enables full-parameter fine-tuning (NO frozen modules).
+# Use this for H100/A100 training. 4090 cannot support full-param fine-tuning
+# due to memory constraints (~24GB vs ~48GB needed).
+# =============================================================================
+
+defaults:
+  - default_dataset.yaml
+
+exp_name: co3d_full_finetune
+img_size: 518
+num_workers: 4
+seed_value: 42
+accum_steps: 4          # 梯度累积（chunk_batch会自动适配小batch避免空chunk）
+patch_size: 14
+val_epoch_freq: 5
+max_img_per_gpu: 24      # Reduced from 48 for memory-constrained full-param training
+
+limit_train_batches: 400  # Reduced for faster iteration
+limit_val_batches: 200
+
+data:
+  train:
+    _target_: data.dynamic_dataloader.DynamicTorchDataset
+    num_workers: ${num_workers}
+    max_img_per_gpu: ${max_img_per_gpu}
+    common_config:
+      img_size: ${img_size}
+      patch_size: ${patch_size}
+      debug: False
+      repeat_batch: False
+    dataset:
+      _target_: data.composed_dataset.ComposedDataset
+      dataset_configs:
+        - _target_: data.datasets.co3d.Co3dDataset
+          split: train
+          min_num_images: 2    # 降低限制，适配小数据集
+          # ===== IMPORTANT: Set your Co3D paths below =====
+          CO3D_DIR: /YOUR/PATH/TO/CO3D
+          CO3D_ANNOTATION_DIR: /YOUR/PATH/TO/CO3D_ANNOTATION
+  val:
+    _target_: data.dynamic_dataloader.DynamicTorchDataset
+    num_workers: ${num_workers}
+    max_img_per_gpu: ${max_img_per_gpu}
+    common_config:
+      img_size: ${img_size}
+      patch_size: ${patch_size}
+      debug: False
+    dataset:
+      _target_: data.composed_dataset.ComposedDataset
+      dataset_configs:
+        - _target_: data.datasets.co3d.Co3dDataset
+          split: test
+          min_num_images: 2    # 降低限制，适配小数据集
+          CO3D_DIR: /YOUR/PATH/TO/CO3D
+          CO3D_ANNOTATION_DIR: /YOUR/PATH/TO/CO3D_ANNOTATION
+
+
+logging:
+  log_dir: logs
+  log_visuals: False
+  log_freq: 1
+  log_level_primary: DEBUG
+  log_level_secondary: WARNING
+  all_ranks: False
+  tensorboard_writer:
+    _target_: train_utils.tb_writer.TensorBoardLogger
+    path: ${logging.log_dir}/tensorboard
+  scalar_keys_to_log:
+    train:
+      keys_to_log:
+        - loss_objective
+        - loss_camera
+        - loss_T
+        - loss_R
+        - loss_FL
+        - loss_conf_depth
+        - loss_reg_depth
+        - loss_grad_depth
+        - loss_moe_aux
+    val:
+      keys_to_log:
+        - loss_objective
+        - loss_camera
+        - loss_T
+        - loss_R
+        - loss_FL
+        - loss_conf_depth
+        - loss_reg_depth
+        - loss_grad_depth
+        - loss_moe_aux
+
+
+checkpoint:
+  save_dir: logs/${exp_name}/ckpts
+  save_freq: 5
+  # ===== IMPORTANT: Download the pre-trained checkpoint =====
+  # From: https://huggingface.co/facebook/VGGT-1B
+  # Or set to null to train from scratch
+  resume_checkpoint_path: null
+  strict: False
+
+
+loss:
+  _target_: loss.MultitaskLoss
+  camera:
+    weight: 5.0
+    loss_type: "l1"
+  depth:
+    weight: 1.0
+    gradient_loss_fn: "grad"
+    valid_range: 0.98
+  point: null
+  track: null
+
+
+optim:
+  param_group_modifiers: False
+
+  optimizer:
+    _target_: torch.optim.AdamW
+    lr: 5e-5            # Lower LR for full-param fine-tuning
+    weight_decay: 0.05
+
+  # ===== KEY CHANGE: No frozen modules =====
+  # frozen_module_names: []  # All parameters are trainable!
+  # (omitted to unfreeze everything)
+
+  amp:
+    enabled: True
+    amp_dtype: bfloat16
+  gradient_clip:
+    _target_: train_utils.gradient_clip.GradientClipper
+    configs:
+      - module_name: ["aggregator"]
+        max_norm: 1.0
+        norm_type: 2
+      - module_name: ["depth"]
+        max_norm: 1.0
+        norm_type: 2
+      - module_name: ["camera"]
+        max_norm: 1.0
+        norm_type: 2
+  options:
+    lr:
+      - scheduler:
+          _target_: fvcore.common.param_scheduler.CompositeParamScheduler
+          schedulers:
+            - _target_: fvcore.common.param_scheduler.LinearParamScheduler
+              start_value: 1e-8
+              end_value: 5e-5
+            - _target_: fvcore.common.param_scheduler.CosineParamScheduler
+              start_value: 5e-5
+              end_value: 1e-8
+          lengths: [0.05, 0.95]
+          interval_scaling: ['rescaled', 'rescaled']
+    weight_decay:
+      - scheduler:
+          _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+          value: 0.05
+
+
+max_epochs: 20
+
+model:
+  _target_: vggt.models.vggt.VGGT
+  enable_camera: True
+  enable_depth: True
+  enable_point: False
+  enable_track: False
+  camera_head:
+    use_moe: True
+    moe_num_experts: 4
+    moe_top_k: 2
+
+
+distributed:
+  backend: nccl
+  comms_dtype: None
+  find_unused_parameters: False
+  timeout_mins: 30
+  gradient_as_bucket_view: True
+  bucket_cap_mb: 25
+  broadcast_buffers: True
+
+cuda:
+    cudnn_deterministic: False
+    cudnn_benchmark: False
+    allow_tf32: True
