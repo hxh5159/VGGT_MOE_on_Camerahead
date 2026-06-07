@@ -752,6 +752,12 @@ class Trainer:
         # moe_aux_loss flows through y_hat (set by VGGT.forward from camera_head).
         # It is None when use_moe=False, and a scalar tensor otherwise.
         moe_aux_loss = y_hat.get("moe_aux_loss")
+        # Debug: print once to verify the chain is working
+        if self.steps[phase] == 0:
+            print(f"[MoE Debug] step=0, phase={phase}, "
+                  f"'moe_aux_loss' in y_hat={'moe_aux_loss' in y_hat}, "
+                  f"moe_aux_loss is None={moe_aux_loss is None}, "
+                  f"value={moe_aux_loss}")
         if moe_aux_loss is not None:
             loss_dict["loss_moe_aux"] = moe_aux_loss
             loss_dict["objective"] = loss_dict["objective"] + 0.01 * moe_aux_loss
